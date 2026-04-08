@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+import sys
+import os
+sys.path.insert(0, '/workspace')
+from archive_files import archive_group
+import argparse
+
+parser = argparse.ArgumentParser(description="Archive files for a Linux group.")
+parser.add_argument("--group",       required=True)
+parser.add_argument("--archive-dir", default=os.environ.get("ARCHIVE_DIR", "/tmp/archive"))
+args = parser.parse_args()
+archive_group(args.group, args.archive_dir)

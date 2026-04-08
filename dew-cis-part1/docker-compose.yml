@@ -1,0 +1,108 @@
+services:
+
+  # ── PostgreSQL database ───────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB:       archivedb
+      POSTGRES_USER:     archiveuser
+      POSTGRES_PASSWORD: archivepass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archiveuser -d archivedb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── pgAdmin web UI ────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL:    admin@dewcis.com
+      PGADMIN_DEFAULT_PASSWORD: adminpass
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Test Linux environment (users + files pre-created by setup.sh) ───────
+  testenv:
+    image: debian:bookworm-slim
+    command: sh -c "bash /workspace/setup.sh && tail -f /dev/null"
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: archivedb
+      DB_USER: archiveuser
+      DB_PASS: archivepass
+      ARCHIVE_DIR: /tmp/archive
+
+  # ── FastAPI service (runs the API so tests can hit it) ────────────────────
+  api:
+    image: python:3.11-slim
+    command: >
+      sh -c "pip install -r /workspace/requirements.txt -q &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: archivedb
+      DB_USER: archiveuser
+      DB_PASS: archivepass
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/stats')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Pytest runner (self-contained — runs all tests automatically) ─────────
+  test-runner:
+    image: python:3.11-slim
+    command: >
+      sh -c "
+        apt-get update &&
+        apt-get install -y docker.io &&
+        pip install -r /workspace/requirements.txt -q &&
+        pytest /workspace/test_archive.py -v --tb=short
+      "
+    volumes:
+      - ./:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      testenv:
+        condition: service_started
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: archivedb
+      DB_USER: archiveuser
+      DB_PASS: archivepass
+      ARCHIVE_DIR: /tmp/archive
+      API_URL: http://api:8000
+
+volumes:
+  pgdata:

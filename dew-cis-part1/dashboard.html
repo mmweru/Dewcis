@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Archive Dashboard — Dew CIS Solutions</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 30px 40px; background: #f5f5f5; color: #222; }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    .subtitle { color: #666; font-size: 13px; margin-bottom: 24px; }
+    .cards { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+    .card { background: #fff; border-radius: 10px; padding: 18px 24px; flex: 1; min-width: 140px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .card-label { font-size: 12px; color: #888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+    .card-value { font-size: 28px; font-weight: bold; color: #1a1a2e; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px;
+            overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    th { background: #1a1a2e; color: #fff; padding: 11px 14px; text-align: left; font-size: 13px; font-weight: 600; }
+    td { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+    tr:last-child td { border-bottom: none; }
+    tr.run-row:hover { background: #f0f6ff; cursor: pointer; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-completed { background: #e6f9f0; color: #1a7a4a; }
+    .badge-running   { background: #fff4e0; color: #b36a00; }
+    .badge-failed    { background: #fde8e8; color: #b02a2a; }
+    #detail-section { display: none; margin-top: 24px; background: #fff; border-radius: 10px;
+                      padding: 20px 24px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    #detail-title { font-size: 16px; font-weight: bold; margin: 0 0 14px; }
+    .status-moved   { color: #1a7a4a; font-weight: 600; }
+    .status-skipped { color: #b36a00; font-weight: 600; }
+    .status-error   { color: #b02a2a; font-weight: 600; }
+    #refresh-bar { font-size: 12px; color: #999; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>File Archive Dashboard</h1>
+  <p class="subtitle">Dew CIS Solutions — Ref 60/2026</p>
+  <div id="refresh-bar">Loading…</div>
+
+  <div class="cards">
+    <div class="card"><div class="card-label">Total Runs</div><div class="card-value" id="s-runs">–</div></div>
+    <div class="card"><div class="card-label">Files Archived</div><div class="card-value" id="s-archived">–</div></div>
+    <div class="card"><div class="card-label">Skipped</div><div class="card-value" id="s-skipped">–</div></div>
+    <div class="card"><div class="card-label">Errors</div><div class="card-value" id="s-errors">–</div></div>
+  </div>
+
+  <table id="runs-table">
+    <thead>
+      <tr>
+        <th>Run #</th><th>Group</th><th>Started</th>
+        <th>Duration (s)</th><th>Moved</th><th>Skipped</th><th>Errors</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="runs-body"></tbody>
+  </table>
+
+  <div id="detail-section">
+    <div id="detail-title"></div>
+    <table>
+      <thead><tr><th>Source</th><th>Destination</th><th>Status</th><th>Reason</th><th>Time</th></tr></thead>
+      <tbody id="detail-body"></tbody>
+    </table>
+  </div>
+
+  <script>
+    async function loadStats() {
+      const s = await fetch('/stats').then(r => r.json());
+      document.getElementById('s-runs').textContent     = s.total_runs;
+      document.getElementById('s-archived').textContent = s.total_files_archived;
+      document.getElementById('s-skipped').textContent  = s.total_skipped;
+      document.getElementById('s-errors').textContent   = s.total_errors;
+    }
+
+    async function loadRuns() {
+      const runs = await fetch('/runs').then(r => r.json());
+      const tbody = document.getElementById('runs-body');
+      tbody.innerHTML = '';
+      runs.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.className = 'run-row';
+        tr.innerHTML = `
+          <td>${r.id}</td>
+          <td>${r.group_name}</td>
+          <td>${new Date(r.started_at).toLocaleString()}</td>
+          <td>${r.duration ?? '—'}</td>
+          <td>${r.total_moved}</td>
+          <td>${r.total_skipped}</td>
+          <td>${r.total_errors}</td>
+          <td><span class="badge badge-${r.status}">${r.status}</span></td>
+        `;
+        tr.addEventListener('click', () => showDetail(r.id, r.group_name));
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function showDetail(runId, groupName) {
+      const data = await fetch(`/runs/${runId}`).then(r => r.json());
+      document.getElementById('detail-title').textContent = `Run #${runId} — ${groupName} (${data.files.length} events)`;
+      const tbody = document.getElementById('detail-body');
+      tbody.innerHTML = '';
+      data.files.forEach(f => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${f.source}</td>
+          <td>${f.destination ?? '—'}</td>
+          <td class="status-${f.status}">${f.status}</td>
+          <td>${f.reason ?? ''}</td>
+          <td>${new Date(f.timestamp).toLocaleTimeString()}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      document.getElementById('detail-section').style.display = 'block';
+    }
+
+    async function refresh() {
+      await Promise.all([loadStats(), loadRuns()]);
+      document.getElementById('refresh-bar').textContent =
+        `Last updated: ${new Date().toLocaleTimeString()} · Auto-refreshes every 10 seconds`;
+    }
+
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>
