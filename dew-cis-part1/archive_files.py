@@ -20,7 +20,6 @@ import pwd
 import shutil
 import sys
 
-# ── DB config from environment (set in docker-compose.yml or shell) ───────────
 DB_CONFIG = {
     "host":     os.environ.get("DB_HOST", "localhost"),
     "port":     int(os.environ.get("DB_PORT", 5432)),
@@ -30,8 +29,6 @@ DB_CONFIG = {
 }
 DEFAULT_ARCHIVE_DIR = os.environ.get("ARCHIVE_DIR", "/tmp/archive")
 
-
-# ── Database helpers ───────────────────────────────────────────────────────────
 
 def get_connection():
     return psycopg2.connect(**DB_CONFIG)
@@ -103,7 +100,22 @@ def log_event(conn, run_id, source, destination, status, reason=None):
     conn.commit()
 
 
-# ── Archiving logic ────────────────────────────────────────────────────────────
+def get_previously_archived_sources(conn, group_name):
+    """
+    Return a set of source paths that were successfully moved in any
+    previous run for this group. Used to detect files already archived
+    whose source no longer exists (because shutil.move removed them).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT e.source
+               FROM archive_events e
+               JOIN archive_runs r ON r.id = e.run_id
+               WHERE r.group_name = %s AND e.status = 'moved'""",
+            (group_name,)
+        )
+        return {row[0] for row in cur.fetchall()}
+
 
 def archive_group(group_name, archive_dir):
     """
@@ -111,7 +123,6 @@ def archive_group(group_name, archive_dir):
     and records every event in PostgreSQL.
     """
 
-    # 1. Connect to DB — fail fast if unavailable
     try:
         conn = get_connection()
     except Exception as e:
@@ -120,7 +131,6 @@ def archive_group(group_name, archive_dir):
 
     create_schema(conn)
 
-    # 2. Resolve group — exit cleanly if not found
     try:
         group_info = grp.getgrnam(group_name)
     except KeyError:
@@ -132,7 +142,8 @@ def archive_group(group_name, archive_dir):
         print(f"WARNING: Group '{group_name}' has no members. Nothing to archive.")
         sys.exit(0)
 
-    # 3. Open a run record before touching any files
+    previously_archived = get_previously_archived_sources(conn, group_name)
+
     run_id = start_run(conn, group_name)
     print(f"Run #{run_id} started — group '{group_name}', {len(members)} member(s).")
 
@@ -151,42 +162,52 @@ def archive_group(group_name, archive_dir):
             print(f"  WARNING: Home dir '{home_dir}' missing for '{username}', skipping.")
             continue
 
-        # Walk all files recursively
+        current_files = set()
         for dirpath, _, filenames in os.walk(home_dir):
             for filename in filenames:
-                src = os.path.join(dirpath, filename)
+                current_files.add(os.path.join(dirpath, filename))
 
-                # Preserve directory structure under archive_dir
-                rel = os.path.relpath(src, "/")
-                dst = os.path.join(archive_dir, rel)
+        already_moved = {
+            p for p in previously_archived
+            if p.startswith(home_dir + os.sep) or p == home_dir
+        }
 
-                if os.path.exists(dst):
-                    log_event(conn, run_id, src, dst, "skipped", "already at destination")
-                    print(f"  SKIP  {src}")
-                    skipped += 1
-                    continue
+        for src in sorted(current_files):
+            rel = os.path.relpath(src, "/")
+            dst = os.path.join(archive_dir, rel)
 
-                try:
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.move(src, dst)
-                    log_event(conn, run_id, src, dst, "moved")
-                    print(f"  MOVE  {src}")
-                    moved += 1
-                except PermissionError as e:
-                    log_event(conn, run_id, src, None, "error", f"permission denied: {e}")
-                    print(f"  ERR   {src} — permission denied")
-                    errors += 1
-                except Exception as e:
-                    log_event(conn, run_id, src, None, "error", str(e))
-                    print(f"  ERR   {src} — {e}")
-                    errors += 1
+            if os.path.exists(dst):
+                log_event(conn, run_id, src, dst, "skipped", "already at destination")
+                print(f"  SKIP  {src}")
+                skipped += 1
+                continue
+
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(src, dst)
+                log_event(conn, run_id, src, dst, "moved")
+                print(f"  MOVE  {src}")
+                moved += 1
+            except PermissionError as e:
+                log_event(conn, run_id, src, None, "error", f"permission denied: {e}")
+                print(f"  ERR   {src} — permission denied")
+                errors += 1
+            except Exception as e:
+                log_event(conn, run_id, src, None, "error", str(e))
+                print(f"  ERR   {src} — {e}")
+                errors += 1
+
+        for src in sorted(already_moved - current_files):
+            rel = os.path.relpath(src, "/")
+            dst = os.path.join(archive_dir, rel)
+            log_event(conn, run_id, src, dst, "skipped", "already archived in previous run")
+            print(f"  SKIP  {src} (previously archived)")
+            skipped += 1
 
     finish_run(conn, run_id, moved, skipped, errors)
     conn.close()
     print(f"\nRun #{run_id} done: {moved} moved, {skipped} skipped, {errors} errors.")
 
-
-# ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

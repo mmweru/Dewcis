@@ -9,7 +9,6 @@ import pytest
 import psycopg2
 import psycopg2.extras
 
-# ── Read from environment (set in docker-compose.yml) ─────────────────────────
 DB_CONFIG = {
     "host":     os.environ.get("DB_HOST", "localhost"),
     "port":     int(os.environ.get("DB_PORT", 5432)),

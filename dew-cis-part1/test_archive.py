@@ -41,22 +41,30 @@ def db():
 
 def run_archiver(group, extra_args=None):
     """
-    Run archive_files.py inside the testenv container via docker compose exec.
-    Returns the CompletedProcess so tests can inspect returncode, stdout, stderr.
+    Run archive_files.py inside the testenv container.
+    Uses docker exec with container detection to avoid compose issues.
     """
+    # Find the testenv container
+    ps_cmd = ["docker", "ps", "-q", "--filter", "name=testenv"]
+    result = subprocess.run(ps_cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(
+            "testenv container not found. "
+            "Make sure the docker-compose services are running."
+        )
+    
+    container_id = result.stdout.strip().split('\n')[0]
+    
     cmd = [
-        "docker", "compose", "exec", "-T", "testenv",
+        "docker", "exec", "-i", container_id,
         "python3", "/workspace/archive_files.py", "--group", group
     ]
     if extra_args:
         cmd += extra_args
+    
     return subprocess.run(cmd, capture_output=True, text=True)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION A — ARCHIVER TESTS
-# These tests exercise the archive_files.py script and verify the DB records.
-# ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.order(1)
 def test_group_not_found():
@@ -234,11 +242,6 @@ def test_progressive_db_writes():
 
     conn.close()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION B — FASTAPI TESTS
-# These tests hit the running API service.
-# ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.order(6)
 def test_api_get_runs_returns_array():

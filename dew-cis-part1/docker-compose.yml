@@ -1,6 +1,5 @@
 services:
 
-  # ── PostgreSQL database ───────────────────────────────────────────────────
   postgres:
     image: postgres:15
     environment:
@@ -17,7 +16,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── pgAdmin web UI ────────────────────────────────────────────────────────
   pgadmin:
     image: dpage/pgadmin4
     environment:
@@ -29,10 +27,10 @@ services:
       postgres:
         condition: service_healthy
 
-  # ── Test Linux environment (users + files pre-created by setup.sh) ───────
   testenv:
     image: debian:bookworm-slim
-    command: sh -c "bash /workspace/setup.sh && tail -f /dev/null"
+    command: >
+      sh -c "bash /workspace/setup.sh && touch /tmp/.setup_done && tail -f /dev/null"
     volumes:
       - ./:/workspace
     working_dir: /workspace
@@ -46,8 +44,12 @@ services:
       DB_USER: archiveuser
       DB_PASS: archivepass
       ARCHIVE_DIR: /tmp/archive
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/.setup_done"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
-  # ── FastAPI service (runs the API so tests can hit it) ────────────────────
   api:
     image: python:3.11-slim
     command: >
@@ -71,22 +73,22 @@ services:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/stats')\""]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 30s
 
-  # ── Pytest runner (self-contained — runs all tests automatically) ─────────
   test-runner:
+    profiles: [test]
     image: python:3.11-slim
     command: >
       sh -c "
-        apt-get update &&
-        apt-get install -y docker.io &&
+        apt-get update -qq &&
+        apt-get install -y -qq docker.io &&
         pip install -r /workspace/requirements.txt -q &&
         pytest /workspace/test_archive.py -v --tb=short
       "
     volumes:
       - ./:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
-
     working_dir: /workspace
     depends_on:
       postgres:
@@ -94,7 +96,7 @@ services:
       api:
         condition: service_healthy
       testenv:
-        condition: service_started
+        condition: service_healthy
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
